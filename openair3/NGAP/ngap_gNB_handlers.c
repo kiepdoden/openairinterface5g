@@ -880,12 +880,22 @@ static int ngap_gNB_handle_ue_context_release_command(sctp_assoc_t assoc_id, uin
             gnb_ue_ngap_id);
         return -1;
       } else {
-        message_p = itti_alloc_new_message(TASK_NGAP, 0, NGAP_UE_CONTEXT_RELEASE_COMMAND);
-
         if (ue_desc_p->amf_ue_ngap_id == 0) { // case of Detach Request and switch off from RRC_IDLE mode
           ue_desc_p->amf_ue_ngap_id = amf_ue_ngap_id;
+        } else if (ue_desc_p->amf_ue_ngap_id != amf_ue_ngap_id) {
+          /* TS 38.413 names the UE by the pair of NGAP IDs. A command whose AMF UE
+           * NGAP ID differs is for an older association, whose RAN UE NGAP ID this
+           * gNB has since given to another UE; acting on it releases a live UE. */
+          NGAP_ERROR("[SCTP %u] UE context release command for RAN UE NGAP ID 0x%06lx: "
+                     "AMF UE NGAP ID mismatch (cmd %lu, ctx %lu) -> ignored as stale\n",
+                     assoc_id,
+                     (unsigned long)gnb_ue_ngap_id,
+                     (unsigned long)amf_ue_ngap_id,
+                     (unsigned long)ue_desc_p->amf_ue_ngap_id);
+          return -1;
         }
 
+        message_p = itti_alloc_new_message(TASK_NGAP, 0, NGAP_UE_CONTEXT_RELEASE_COMMAND);
         NGAP_UE_CONTEXT_RELEASE_COMMAND(message_p).gNB_ue_ngap_id = gnb_ue_ngap_id;
         itti_send_msg_to_task(TASK_RRC_GNB, ue_desc_p->gNB_instance->instance, message_p);
         return 0;
