@@ -861,6 +861,41 @@ static void nr_rx_ra_sdu(gNB_MAC_INST *mac,
     // Replace the current UE by the UE identified by C-RNTI
     NR_UE_info_t *old_UE = find_nr_UE(&mac->UE_info, crnti);
     if (!old_UE) {
+      /* oai-mup: a UE handed over to this cell may access it by contention-based RA instead of its dedicated
+       * preamble, with its new C-RNTI in Msg3 (38.321 5.1.2). That C-RNTI is still a pending CFRA process here,
+       * not a connected UE. Complete the handover on this Msg3 as the CFRA path above does, release the
+       * contention-based process, and ask for an uplink grant on the C-RNTI: for a handover, that grant is the
+       * contention resolution (38.321 5.1.5). */
+      NR_UE_info_t *ho_UE = find_ra_UE(&mac->UE_info, crnti);
+      if (ho_UE && ho_UE != UE && ho_UE->pcell == cell && ho_UE->ra && ho_UE->ra->cfra) {
+        NR_UE_sched_ctrl_t *ho_sched = &ho_UE->UE_sched_ctrl;
+        reset_dl_harq_list(ho_sched);
+        reset_ul_harq_list(ho_sched);
+        configure_UE_BWP(cell, scc, ho_UE, false, NR_SearchSpace__searchSpaceType_PR_ue_Specific, -1, -1);
+        ho_UE->UE_beam_index = UE->UE_beam_index;
+        ho_sched->ta_frame = (frame + 100) % MAX_FRAME_NUMBER;
+        if (timing_advance != 0xffff)
+          ho_sched->ta_update = timing_advance;
+        if (ul_cqi != 0xff)
+          nr_mac_pc_reset_snr(&ho_sched->pusch_pc, ul_cqi * 5 - 640, rssi);
+        // a PHR in this Msg3 is relative to the Msg3's PRBs
+        ho_sched->ul_harq_processes[harq_pid].sched_pusch.rbSize = ra->msg3_nb_rb;
+        nr_release_ra_UE(mac, rnti); // the contention-based process: frees UE and ra
+        if (!transition_ra_connected_nr_ue(mac, ho_UE)) {
+          LOG_E(NR_MAC, "cannot add UE %04x: list is full\n", crnti);
+          return;
+        }
+        ho_sched->SR = true;
+        LOG_A(NR_MAC,
+              "%4d.%2d (rnti 0x%04x) handover completed by contention-based RA (TC-RNTI 0x%04x)\n",
+              frame,
+              slot,
+              crnti,
+              rnti);
+        // the rest of Msg3, e.g. the RRCReconfigurationComplete
+        nr_process_mac_pdu(mac, cell, ho_UE, frame, slot, sdu, sdu_len, harq_pid);
+        return;
+      }
       // The UE identified by C-RNTI no longer exists at the gNB
       // Let's abort the current RA, so the UE will trigger a new RA later but using RRCSetupRequest instead. A better
       // solution may be implemented
